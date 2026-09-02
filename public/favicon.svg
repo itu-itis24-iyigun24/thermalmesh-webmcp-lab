@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ThermalMesh Lab">
+  <rect width="64" height="64" rx="16" fill="#081216"/>
+  <path d="M18 44V20m14 28V16m14 28V20" stroke="#67e8f9" stroke-width="4" stroke-linecap="round"/>
+  <path d="M18 26c8-8 20-8 28 0M18 38c8 8 20 8 28 0" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" opacity=".85"/>
+  <circle cx="18" cy="32" r="4" fill="#67e8f9"/>
+  <circle cx="32" cy="32" r="5" fill="#ecfeff"/>
+  <circle cx="46" cy="32" r="4" fill="#67e8f9"/>
+</svg>
