@@ -7,7 +7,12 @@ export interface WebMcpTool {
     readOnlyHint?: boolean;
     untrustedContentHint?: boolean;
   };
-  execute(input: unknown): unknown;
+  // The draft supplies options; current Site tools hosts may still call with input only.
+  execute(input: unknown, options?: ToolExecuteOptions): Promise<unknown>;
+}
+
+export interface ToolExecuteOptions {
+  signal: AbortSignal;
 }
 
 export interface ModelContext {

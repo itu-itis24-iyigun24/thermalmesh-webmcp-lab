@@ -9,7 +9,7 @@ import type {
   SimulationResult,
   WorkloadConfig,
 } from '@/src/types';
-import type { WebMcpTool } from '@/src/webmcp/types';
+import type { ToolExecuteOptions, WebMcpTool } from '@/src/webmcp/types';
 
 const noArgumentsSchema = {
   type: 'object',
@@ -119,6 +119,16 @@ function assertNoArguments(input: unknown): void {
   }
 }
 
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === 'object' && input !== null && !Array.isArray(input);
+}
+
+function assertExecutionActive(options?: Partial<ToolExecuteOptions>): void {
+  if (options?.signal?.aborted) {
+    throw new Error('Tool execution was cancelled.');
+  }
+}
+
 function formatBenchmark(result: SimulationResult) {
   return {
     policy: result.policy,
@@ -131,7 +141,9 @@ function formatBenchmark(result: SimulationResult) {
       throughput_rps: result.metrics.throughput,
       ttft_p50_ms: result.metrics.ttftP50Ms,
       ttft_p95_ms: result.metrics.ttftP95Ms,
+      ttft_sample_count: result.metrics.ttftSampleCount,
       queue_latency_p95_ms: result.metrics.queueP95Ms,
+      queue_sample_count: result.metrics.queueSampleCount,
       average_utilization_pct: result.metrics.averageUtilization,
       max_queue_depth: Math.max(
         ...result.workers.map((worker) => worker.maxQueueDepth),
@@ -155,6 +167,7 @@ function formatBenchmark(result: SimulationResult) {
 function formatComparison(comparison: ComparisonResult) {
   return {
     winner: comparison.winner,
+    decision_reason: comparison.decisionReason,
     scoring_rule: comparison.scoreSummary,
     scores: comparison.scores,
     thermalmesh_vs_round_robin: {
@@ -172,11 +185,11 @@ function formatComparison(comparison: ComparisonResult) {
 function mapWorkloadInput(
   input: unknown,
   current: WorkloadConfig,
-): WorkloadConfig {
-  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+): Record<string, unknown> {
+  if (!isRecord(input)) {
     throw new Error('Input must be an object.');
   }
-  const record = input as Record<string, unknown>;
+  const record = input;
   const allowed = new Set([
     'request_rate',
     'input_tokens',
@@ -195,21 +208,15 @@ function mapWorkloadInput(
     Object.hasOwn(record, key) ? record[key] : fallback;
 
   return {
-    requestRate: valueOrCurrent('request_rate', current.requestRate) as number,
-    inputTokens: valueOrCurrent('input_tokens', current.inputTokens) as number,
-    outputTokens: valueOrCurrent(
-      'output_tokens',
-      current.outputTokens,
-    ) as number,
+    requestRate: valueOrCurrent('request_rate', current.requestRate),
+    inputTokens: valueOrCurrent('input_tokens', current.inputTokens),
+    outputTokens: valueOrCurrent('output_tokens', current.outputTokens),
     durationSeconds: valueOrCurrent(
       'duration_seconds',
       current.durationSeconds,
-    ) as number,
-    trafficPattern: valueOrCurrent(
-      'traffic_pattern',
-      current.trafficPattern,
-    ) as WorkloadConfig['trafficPattern'],
-    seed: valueOrCurrent('seed', current.seed) as number,
+    ),
+    trafficPattern: valueOrCurrent('traffic_pattern', current.trafficPattern),
+    seed: valueOrCurrent('seed', current.seed),
   };
 }
 
@@ -221,8 +228,9 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
       description:
         'Inspect the live ThermalMesh Lab workers, capacities, workload, active routing policy, and current simulated benchmark state before deciding what to change or run.',
       inputSchema: noArgumentsSchema,
-      annotations: { readOnlyHint: true, untrustedContentHint: false },
-      execute(input) {
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      async execute(input, options) {
+        assertExecutionActive(options);
         assertNoArguments(input);
         const snapshot = store.getAgentSnapshot();
         return {
@@ -230,7 +238,8 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
           summary: `${snapshot.workers.length} workers are configured; ${snapshot.activePolicy} is active.`,
           simulated: true,
           ...snapshot,
-          apply_winning_configuration_available: snapshot.comparisonValid,
+          apply_winning_configuration_available:
+            snapshot.applyWinningToolAvailable,
         };
       },
     },
@@ -240,8 +249,9 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
       description:
         'Replace the complete ordered list of simulated inference workers. This updates the visible Cluster panel immediately and invalidates benchmark results for the previous cluster.',
       inputSchema: configureClusterSchema,
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input) {
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      async execute(input, options) {
+        assertExecutionActive(options);
         const workers = validateClusterToolInput(input);
         const beforeVersion = store.getState().configVersion;
         const hadResults = Object.keys(store.getState().results).length > 0;
@@ -270,7 +280,8 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
         'Update one or more simulated workload settings while preserving omitted values. This updates the visible Workload controls immediately and invalidates prior benchmark results.',
       inputSchema: configureWorkloadSchema,
       annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input) {
+      async execute(input, options) {
+        assertExecutionActive(options);
         const beforeVersion = store.getState().configVersion;
         const hadResults = Object.keys(store.getState().results).length > 0;
         const workload = store.configureWorkload(
@@ -293,8 +304,9 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
       description:
         'Run one routing policy through the deterministic browser simulation and update the visible benchmark results. Use compare_routing_policies for a fair side-by-side decision.',
       inputSchema: policySchema,
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input) {
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      async execute(input, options) {
+        assertExecutionActive(options);
         const policy = validatePolicyToolInput(input);
         const benchmark = store.runBenchmark(policy, { actor: 'agent' });
         return {
@@ -310,18 +322,19 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
       description:
         'Run Round Robin and ThermalMesh against the exact same cluster, workload, and seeded request trace, update the visible comparison, and calculate a transparent winner in one operation.',
       inputSchema: noArgumentsSchema,
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input) {
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      async execute(input, options) {
+        assertExecutionActive(options);
         assertNoArguments(input);
         const comparison = store.compare({ actor: 'agent' });
         return {
           ok: true,
           summary:
             comparison.winner === 'tie'
-              ? 'The two policies are within 1% on the composite score.'
-              : `${comparison.winner} has the lower composite score for this simulated scenario.`,
+              ? 'Completion counts match and the composite scores are less than 1% apart.'
+              : comparison.decisionReason,
           comparison: formatComparison(comparison),
-          apply_winning_configuration_available: true,
+          apply_winning_configuration_eligible: true,
         };
       },
     },
@@ -331,8 +344,9 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
       description:
         'Analyze the current valid comparison, or the latest benchmark, and return evidence-based queue concentration, slow-worker overload, saturation, or homogeneous-cluster observations without changing state.',
       inputSchema: noArgumentsSchema,
-      annotations: { readOnlyHint: true, untrustedContentHint: false },
-      execute(input) {
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      async execute(input, options) {
+        assertExecutionActive(options);
         assertNoArguments(input);
         const observations = store.inspectBottlenecks();
         const state = store.getState();
@@ -355,7 +369,8 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
         'Set Round Robin or ThermalMesh as the active routing policy and update the visible policy indicator without changing the cluster, workload, or benchmark results.',
       inputSchema: policySchema,
       annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input) {
+      async execute(input, options) {
+        assertExecutionActive(options);
         const policy = validatePolicyToolInput(input);
         store.applyRoutingPolicy(policy, { actor: 'agent' });
         return {
@@ -371,12 +386,13 @@ export function createBaseToolDefinitions(store: LabStore): WebMcpTool[] {
 export function createWinningToolDefinition(store: LabStore): WebMcpTool {
   return {
     name: 'apply_winning_configuration',
-    title: 'Apply winning configuration',
+    title: 'Apply recommended routing policy',
     description:
-      'Apply the routing policy with the lower transparent composite score from the current valid comparison. This tool is available only after comparison and disappears when the scenario changes.',
+      'Apply the routing policy recommended by the current valid comparison. More completed requests wins, then the composite score; a tie safely keeps the active policy. This tool disappears when the scenario changes.',
     inputSchema: noArgumentsSchema,
     annotations: { readOnlyHint: false, untrustedContentHint: false },
-    execute(input) {
+    async execute(input, options) {
+      assertExecutionActive(options);
       assertNoArguments(input);
       const comparison = store.getState().comparison;
       if (!comparison) {
@@ -387,7 +403,10 @@ export function createWinningToolDefinition(store: LabStore): WebMcpTool {
       const policy = store.applyWinningConfiguration({ actor: 'agent' });
       return {
         ok: true,
-        summary: `${policy} is now visibly active based on the current comparison.`,
+        summary:
+          comparison.winner === 'tie'
+            ? `The comparison is tied; ${policy} remains visibly active.`
+            : `${policy} is now visibly active based on the current comparison.`,
         applied_policy: policy,
         comparison_winner: comparison.winner,
         scoring_rule: comparison.scoreSummary,

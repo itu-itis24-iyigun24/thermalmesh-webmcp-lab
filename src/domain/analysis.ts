@@ -20,6 +20,7 @@ function analyzeRun(result: SimulationResult): BottleneckObservation[] {
       code: 'slow_worker_overloaded',
       message: `${slowest.name} is saturated and accumulated a sustained queue under ${policyLabel(result.policy)}.`,
       evidence: {
+        policy: result.policy,
         utilizationPercent: slowest.utilization,
         maxQueueDepth: slowest.maxQueueDepth,
         capacity: slowest.capacity,
@@ -31,8 +32,9 @@ function analyzeRun(result: SimulationResult): BottleneckObservation[] {
     observations.push({
       severity: 'warning',
       code: 'queue_concentration',
-      message: `Queued work is concentrated on ${busiest.name}.`,
+      message: `Queued work is concentrated on ${busiest.name} under ${policyLabel(result.policy)}.`,
       evidence: {
+        policy: result.policy,
         maxQueueDepth: busiest.maxQueueDepth,
         utilizationPercent: busiest.utilization,
       },
@@ -51,6 +53,7 @@ function analyzeRun(result: SimulationResult): BottleneckObservation[] {
       code: 'system_saturation',
       message: `The cluster is operating close to saturation under ${policyLabel(result.policy)}.`,
       evidence: {
+        policy: result.policy,
         averageUtilizationPercent: result.metrics.averageUtilization,
         unfinishedRequests: result.metrics.unfinishedRequests,
         totalRequests: result.metrics.totalRequests,
@@ -84,6 +87,7 @@ export function inspectBottlenecks(
     const latencyDifference = comparison.improvements.ttftP95Percent ?? 0;
 
     observations.push(...analyzeRun(comparison.roundRobin));
+    observations.push(...analyzeRun(comparison.thermalmesh));
     if (capacityVariation < 0.08 && Math.abs(latencyDifference) < 5) {
       observations.push({
         severity: 'info',
@@ -105,6 +109,19 @@ export function inspectBottlenecks(
           ttftP95ReductionPercent: latencyDifference,
           throughputChangePercent:
             comparison.improvements.throughputPercent ?? 0,
+        },
+      });
+    } else if (latencyDifference < -5) {
+      observations.push({
+        severity: 'info',
+        code: 'round_robin_latency_advantage',
+        message:
+          'Round Robin has lower tail latency in this scenario; review completion and throughput before applying it.',
+        evidence: {
+          roundRobinTtftP95ReductionPercent: Math.abs(latencyDifference),
+          thermalmeshThroughputChangePercent:
+            comparison.improvements.throughputPercent ?? 0,
+          thermalmeshCompletedDelta: comparison.improvements.completedDelta,
         },
       });
     }

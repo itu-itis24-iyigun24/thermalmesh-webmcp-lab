@@ -1,6 +1,7 @@
 import { percentile, round } from '@/src/simulation/math';
 import { createSeededRandom } from '@/src/simulation/prng';
 import { scenarioSignature } from '@/src/simulation/scenario';
+import { validateWorkers, validateWorkload } from '@/src/domain/validation';
 import type {
   RoutingPolicy,
   ScenarioConfig,
@@ -9,7 +10,7 @@ import type {
   WorkerMetrics,
 } from '@/src/types';
 
-interface PlannedRequest {
+export interface PlannedRequest {
   arrivalMs: number;
   prefillWork: number;
   decodeWork: number;
@@ -22,7 +23,6 @@ interface RuntimeWorker {
   pendingHead: number;
   assignedRequests: number;
   completedRequests: number;
-  unfinishedRequests: number;
   maxQueueDepth: number;
   busyMs: number;
 }
@@ -33,38 +33,70 @@ const BURST_WINDOW_MS = 1_500;
 const BURST_RATE_MULTIPLIER = 2.45;
 const LULL_RATE_MULTIPLIER = 0.38;
 
-export function generateRequestPlan(config: ScenarioConfig): PlannedRequest[] {
-  const random = createSeededRandom(config.workload.seed);
+function rawTrafficMultiplier(
+  pattern: ScenarioConfig['workload']['trafficPattern'],
+  bucketStart: number,
+): number {
+  if (pattern === 'steady') return 1;
+  return bucketStart % BURST_CYCLE_MS < BURST_WINDOW_MS
+    ? BURST_RATE_MULTIPLIER
+    : LULL_RATE_MULTIPLIER;
+}
+
+function trafficNormalization(
+  pattern: ScenarioConfig['workload']['trafficPattern'],
+  durationMs: number,
+): number {
+  if (pattern === 'steady') return 1;
+  let weightedMultiplierMs = 0;
+  for (
+    let bucketStart = 0;
+    bucketStart < durationMs;
+    bucketStart += BUCKET_MS
+  ) {
+    const bucketWidth = Math.min(BUCKET_MS, durationMs - bucketStart);
+    weightedMultiplierMs +=
+      bucketWidth * rawTrafficMultiplier(pattern, bucketStart);
+  }
+  return durationMs / weightedMultiplierMs;
+}
+
+export function generateRequestPlan(
+  config: ScenarioConfig,
+): readonly PlannedRequest[] {
+  validateWorkers(config.workers);
+  const workload = validateWorkload(config.workload);
+  const random = createSeededRandom(workload.seed);
   const requests: PlannedRequest[] = [];
-  const durationMs = config.workload.durationSeconds * 1_000;
+  const durationMs = workload.durationSeconds * 1_000;
+  const normalization = trafficNormalization(
+    workload.trafficPattern,
+    durationMs,
+  );
 
   for (
     let bucketStart = 0;
     bucketStart < durationMs;
     bucketStart += BUCKET_MS
   ) {
-    const cyclePosition = bucketStart % BURST_CYCLE_MS;
+    const bucketWidth = Math.min(BUCKET_MS, durationMs - bucketStart);
     const multiplier =
-      config.workload.trafficPattern === 'bursty'
-        ? cyclePosition < BURST_WINDOW_MS
-          ? BURST_RATE_MULTIPLIER
-          : LULL_RATE_MULTIPLIER
-        : 1;
-    const expected =
-      config.workload.requestRate * (BUCKET_MS / 1_000) * multiplier;
+      rawTrafficMultiplier(workload.trafficPattern, bucketStart) *
+      normalization;
+    const expected = workload.requestRate * (bucketWidth / 1_000) * multiplier;
     const guaranteed = Math.floor(expected);
     const count = guaranteed + (random.next() < expected - guaranteed ? 1 : 0);
 
     for (let index = 0; index < count; index += 1) {
       const inputJitter = 0.82 + random.next() * 0.36;
       const outputJitter = 0.78 + random.next() * 0.44;
-      const inputTokens = config.workload.inputTokens * inputJitter;
-      const outputTokens = config.workload.outputTokens * outputJitter;
+      const inputTokens = workload.inputTokens * inputJitter;
+      const outputTokens = workload.outputTokens * outputJitter;
 
       requests.push({
         arrivalMs: Math.min(
           durationMs - 0.001,
-          bucketStart + random.next() * BUCKET_MS,
+          bucketStart + random.next() * bucketWidth,
         ),
         prefillWork: 0.65 + inputTokens * 0.003,
         decodeWork: 0.45 + outputTokens * 0.028,
@@ -72,7 +104,9 @@ export function generateRequestPlan(config: ScenarioConfig): PlannedRequest[] {
     }
   }
 
-  return requests.sort((left, right) => left.arrivalMs - right.arrivalMs);
+  requests.sort((left, right) => left.arrivalMs - right.arrivalMs);
+  for (const request of requests) Object.freeze(request);
+  return Object.freeze(requests);
 }
 
 export function chooseWorkerIndex(
@@ -91,7 +125,17 @@ export function chooseWorkerIndex(
     const start = Math.max(request.arrivalMs, worker.availableAtMs);
     const predictedCompletion =
       start + (totalWork / worker.config.capacity) * 1_000;
-    if (predictedCompletion < bestCompletion - 0.000_001) {
+    const completionDifference = predictedCompletion - bestCompletion;
+    const preferredIndex = roundRobinIndex % workers.length;
+    const candidateDistance =
+      (index - preferredIndex + workers.length) % workers.length;
+    const currentDistance =
+      (bestIndex - preferredIndex + workers.length) % workers.length;
+    if (
+      completionDifference < -0.000_001 ||
+      (Math.abs(completionDifference) <= 0.000_001 &&
+        candidateDistance < currentDistance)
+    ) {
       bestCompletion = predictedCompletion;
       bestIndex = index;
     }
@@ -103,23 +147,40 @@ export function chooseWorkerIndex(
 export function simulateScenario(
   config: ScenarioConfig,
   policy: RoutingPolicy,
+  requestPlan: readonly PlannedRequest[] = generateRequestPlan(config),
 ): SimulationResult {
-  if (config.workers.length === 0)
-    throw new Error('At least one worker is required.');
+  const validatedConfig: ScenarioConfig = {
+    workers: validateWorkers(config.workers),
+    workload: validateWorkload(config.workload),
+  };
 
-  const durationMs = config.workload.durationSeconds * 1_000;
-  const requests = generateRequestPlan(config);
-  const runtimeWorkers: RuntimeWorker[] = config.workers.map((worker) => ({
-    config: worker,
-    availableAtMs: 0,
-    pendingFinishTimes: [],
-    pendingHead: 0,
-    assignedRequests: 0,
-    completedRequests: 0,
-    unfinishedRequests: 0,
-    maxQueueDepth: 0,
-    busyMs: 0,
-  }));
+  const durationMs = validatedConfig.workload.durationSeconds * 1_000;
+  const requests = requestPlan;
+  requests.forEach((request, index) => {
+    if (
+      !Number.isFinite(request.arrivalMs) ||
+      !Number.isFinite(request.prefillWork) ||
+      !Number.isFinite(request.decodeWork) ||
+      request.arrivalMs < 0 ||
+      request.arrivalMs >= durationMs ||
+      request.prefillWork <= 0 ||
+      request.decodeWork < 0
+    ) {
+      throw new Error(`Request trace entry ${index} is invalid.`);
+    }
+  });
+  const runtimeWorkers: RuntimeWorker[] = validatedConfig.workers.map(
+    (worker) => ({
+      config: worker,
+      availableAtMs: 0,
+      pendingFinishTimes: [],
+      pendingHead: 0,
+      assignedRequests: 0,
+      completedRequests: 0,
+      maxQueueDepth: 0,
+      busyMs: 0,
+    }),
+  );
   const observedTtft: number[] = [];
   const observedQueueLatency: number[] = [];
   let roundRobinIndex = 0;
@@ -140,7 +201,7 @@ export function simulateScenario(
       request,
       roundRobinIndex,
     );
-    if (policy === 'round_robin') roundRobinIndex += 1;
+    roundRobinIndex += 1;
 
     const worker = runtimeWorkers[selectedIndex];
     const startMs = Math.max(request.arrivalMs, worker.availableAtMs);
@@ -173,8 +234,6 @@ export function simulateScenario(
 
     if (finishMs <= durationMs) {
       worker.completedRequests += 1;
-    } else {
-      worker.unfinishedRequests += 1;
     }
   }
 
@@ -208,13 +267,27 @@ export function simulateScenario(
 
   return {
     policy,
-    seed: config.workload.seed,
-    scenarioSignature: scenarioSignature(config),
+    seed: validatedConfig.workload.seed,
+    scenarioSignature: scenarioSignature(validatedConfig),
     metrics: {
-      ttftP50Ms: round(percentile(observedTtft, 0.5), 1),
-      ttftP95Ms: round(percentile(observedTtft, 0.95), 1),
-      throughput: round(completedRequests / config.workload.durationSeconds, 2),
-      queueP95Ms: round(percentile(observedQueueLatency, 0.95), 1),
+      ttftP50Ms:
+        observedTtft.length > 0
+          ? round(percentile(observedTtft, 0.5), 1)
+          : null,
+      ttftP95Ms:
+        observedTtft.length > 0
+          ? round(percentile(observedTtft, 0.95), 1)
+          : null,
+      throughput: round(
+        completedRequests / validatedConfig.workload.durationSeconds,
+        2,
+      ),
+      queueP95Ms:
+        observedQueueLatency.length > 0
+          ? round(percentile(observedQueueLatency, 0.95), 1)
+          : null,
+      ttftSampleCount: observedTtft.length,
+      queueSampleCount: observedQueueLatency.length,
       completedRequests,
       unfinishedRequests,
       totalRequests: requests.length,

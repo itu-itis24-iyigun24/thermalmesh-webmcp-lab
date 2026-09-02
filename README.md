@@ -8,7 +8,9 @@ ThermalMesh Lab is a browser-based simulator for heterogeneous AI inference clus
 
 ## Demo screenshot
 
-The submission screenshot belongs at [`docs/screenshots/thermalmesh-lab.png`](docs/screenshots/README.md). The live dashboard is the authoritative demo until that capture is added before submission.
+![ThermalMesh Lab with a populated heterogeneous-cluster comparison](docs/screenshots/thermalmesh-lab.png)
+
+The captured dashboard shows the real demo preset after a WebMCP policy comparison, including calculated metrics, worker imbalance, the recommendation, and Agent Activity.
 
 ## The problem
 
@@ -30,22 +32,22 @@ The included demo preset uses two fast workers, one medium worker, one worker fo
 
 Infrastructure operations have semantics that are not reliably represented by coordinates, button text, or visual layout. An agent should ask the application to “compare routing policies,” not infer how to manipulate a chart by sight.
 
-ThermalMesh Lab registers imperative site tools through `document.modelContext`. These tools call the same validated store actions as the visible React controls, so an agent update is immediately visible to the person sharing the page. Unsupported browsers still receive the complete manual simulator. See the [official OpenAI Site tools documentation](https://learn.chatgpt.com/docs/webmcp).
+ThermalMesh Lab registers imperative site tools through `document.modelContext`. These tools call the same validated store actions as the visible React controls, so an agent update is immediately visible to the person sharing the page. Unsupported browsers still receive the complete manual simulator. The implementation follows the [official OpenAI Site tools documentation](https://learn.chatgpt.com/docs/webmcp) and the current [WebMCP draft](https://webmachinelearning.github.io/webmcp/).
 
 ## Exposed WebMCP tools
 
-| Tool                          | Kind          | Purpose                                                                                   |
-| ----------------------------- | ------------- | ----------------------------------------------------------------------------------------- |
-| `get_cluster_state`           | Read          | Inspect workers, workload, active policy, and current results.                            |
-| `configure_cluster`           | Write         | Replace the ordered worker list with validated names and capacities.                      |
-| `configure_workload`          | Write         | Update one or more workload fields and refresh the visible form.                          |
-| `run_benchmark`               | Write         | Simulate one selected routing policy.                                                     |
-| `compare_routing_policies`    | Write         | Run both policies against the same scenario and request trace.                            |
-| `inspect_bottlenecks`         | Read          | Return calculated overload, queue concentration, saturation, or homogeneity observations. |
-| `apply_routing_policy`        | Write         | Change the active routing policy shown by the UI.                                         |
-| `apply_winning_configuration` | Dynamic write | Apply the comparison winner; registered only while a valid comparison exists.             |
+| Tool                          | Kind          | Purpose                                                                                                             |
+| ----------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `get_cluster_state`           | Read          | Inspect workers, workload, active policy, and current results.                                                      |
+| `configure_cluster`           | Write         | Replace the ordered worker list with validated names and capacities.                                                |
+| `configure_workload`          | Write         | Update one or more workload fields and refresh the visible form.                                                    |
+| `run_benchmark`               | Write         | Simulate one selected routing policy.                                                                               |
+| `compare_routing_policies`    | Write         | Run both policies against the same scenario and request trace.                                                      |
+| `inspect_bottlenecks`         | Read          | Return calculated overload, queue concentration, saturation, or homogeneity observations.                           |
+| `apply_routing_policy`        | Write         | Change the active routing policy shown by the UI.                                                                   |
+| `apply_winning_configuration` | Dynamic write | Apply the recommended policy, or keep the current policy on a tie; registered only while a valid comparison exists. |
 
-The seven base tools register once at page load with narrow JSON Schemas and lifecycle `AbortSignal`s. `apply_winning_configuration` gets its own controller after a successful comparison. Changing the cluster or workload clears stale results and aborts that controller, removing the tool immediately.
+The seven base tools register once at page load with narrow JSON Schemas and lifecycle `AbortSignal`s. Execute handlers are asynchronous and honor the draft cancellation signal while remaining compatible with the current Site tools host’s input-only callback form. `apply_winning_configuration` gets its own controller only after base registration and a successful comparison. Changing the cluster or workload clears stale results and aborts that controller, removing the tool immediately.
 
 ## Human–agent synchronization
 
@@ -53,7 +55,7 @@ There is one client-side domain store. React subscribes to it with `useSyncExter
 
 - Agent cluster changes replace the visible worker cards.
 - Agent workload changes refresh the visible form values.
-- Benchmarks populate the same comparison table and worker-load chart.
+- Benchmarks populate the shared results region and worker-load view; a two-policy run also fills the comparison table.
 - Policy changes update the active-policy indicator.
 - The Agent Activity rail records semantic actions only—never hidden reasoning.
 
@@ -67,24 +69,24 @@ The simulator is a deterministic first-come, first-served discrete-event model w
 - Request work combines prompt-prefill work and output-decode work.
 - Service time is `request work / worker capacity`; capacity is an abstract simulation unit.
 - Round Robin assigns requests sequentially in displayed worker order.
-- ThermalMesh predicts completion on every worker using its next available time and capacity, then chooses the earliest completion (stable worker order breaks exact ties).
-- Both comparison runs regenerate the same immutable trace from the same scenario and seed.
+- ThermalMesh predicts completion on every worker using its next available time and capacity, then chooses the earliest completion (a deterministic rotating worker order breaks exact ties).
+- Both comparison runs share one frozen request trace generated from the current scenario and seed.
 - Percentiles use linear interpolation over samples whose respective event—service start for queue latency or first-token completion for TTFT—occurs inside the observation window.
+- A latency percentile is `null`/“Not observed” when its event has no in-window samples. Tool results include sample counts so censored overload runs remain interpretable.
 - Throughput counts requests completed inside the configured observation window.
 - Utilization measures busy time intersecting that window; unfinished requests and queue depth expose overload beyond it.
 
-### Comparison scoring
+### Comparison decision and scoring
 
-The lower score wins:
+The policy that completes more requests inside the observation window wins. When completion counts match, the lower composite score wins:
 
 ```text
-score = 0.45 × TTFT p95
-      + 0.20 × queue-latency p95
+score = 0.55 × TTFT p95
+      + 0.25 × queue-latency p95
       + 0.20 × (1000 / throughput)
-      + 0.15 × (unfinished fraction × 10000)
 ```
 
-Policies within 1% are reported as a tie. ThermalMesh is not forced to win: homogeneous or lightly loaded scenarios may be close, and the comparison table preserves tradeoffs such as a better p95 with a worse p50.
+With equal completion counts, scores less than 1% apart are reported as a tie. A missing latency sample or zero-throughput inverse term uses a finite 1,000,000 ms penalty. ThermalMesh is not forced to win: homogeneous or lightly loaded scenarios may be close, and the comparison table preserves tradeoffs such as a better p95 with a worse p50.
 
 ## Simulated metrics
 
@@ -118,7 +120,7 @@ The app has no backend, authentication, database, paid API, or secret configurat
 Requirements: Node.js 22.13 or newer and npm.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 

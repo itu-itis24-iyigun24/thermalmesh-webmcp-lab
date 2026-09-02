@@ -148,28 +148,6 @@ body {
     @apply font-mono text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground;
   }
 
-  .status-dot {
-    @apply mt-1 size-2.5 shrink-0 rounded-full;
-  }
-
-  .status-dot--cyan {
-    @apply bg-cyan-300 shadow-[0_0_12px_rgb(34_211_238/.75)];
-  }
-  .status-dot--amber {
-    @apply bg-amber-300 shadow-[0_0_12px_rgb(252_211_77/.65)];
-  }
-  .status-dot--red {
-    @apply bg-rose-400 shadow-[0_0_12px_rgb(251_113_133/.65)];
-  }
-  .meter--cyan {
-    @apply bg-cyan-300;
-  }
-  .meter--amber {
-    @apply bg-amber-300;
-  }
-  .meter--red {
-    @apply bg-rose-400;
-  }
   .meter-cyan {
     @apply bg-cyan-300;
   }
@@ -178,17 +156,6 @@ body {
   }
   .meter-rose {
     @apply bg-rose-400;
-  }
-
-  .metric-preview {
-    @apply flex flex-col gap-1 rounded-lg border border-white/8 bg-black/15 p-3;
-  }
-
-  .metric-preview span {
-    @apply text-xs text-muted-foreground;
-  }
-  .metric-preview b {
-    @apply font-mono text-lg font-medium text-white;
   }
 
   .logo-mark {

@@ -10,6 +10,7 @@ import { simulateScenario } from '@/src/simulation/simulate';
 import type {
   ActivityActor,
   BottleneckObservation,
+  DynamicToolStatus,
   LabState,
   RoutingPolicy,
   WebMcpStatus,
@@ -34,9 +35,11 @@ export interface AgentStateSnapshot {
   }>;
   workload: WorkloadConfig;
   activePolicy: RoutingPolicy;
+  workerMetricsPolicy: RoutingPolicy | null;
   latestBenchmark: LabState['results'][RoutingPolicy] | null;
   comparison: LabState['comparison'];
   comparisonValid: boolean;
+  applyWinningToolAvailable: boolean;
 }
 
 const cloneWorkers = (workers: readonly WorkerConfig[]): WorkerConfig[] =>
@@ -65,8 +68,11 @@ export class LabStore {
       latestResultPolicy: null,
       results: {},
       comparison: null,
+      comparisonVersion: 0,
       activity: [],
       webMcpStatus: 'checking',
+      baseToolsRegistered: false,
+      dynamicToolStatus: 'unavailable',
       webMcpError: null,
       notice: 'Ready to simulate the current scenario.',
       configVersion: 0,
@@ -269,16 +275,6 @@ export class LabStore {
       workload: this.state.workload,
     });
     const actor = options.actor ?? 'human';
-    const winnerLabel =
-      comparison.winner === 'thermalmesh' ? 'ThermalMesh' : 'Round Robin';
-    const comparisonNotice =
-      comparison.winner === 'tie'
-        ? 'Comparison complete. Policies are within 1% of the best composite score.'
-        : `Comparison complete. ${winnerLabel} has the lower composite score.`;
-    const comparisonDetail =
-      comparison.winner === 'tie'
-        ? 'Comparison resulted in a tie within the 1% decision threshold.'
-        : `${winnerLabel} ranked best for this exact seeded scenario.`;
     this.emit({
       ...this.state,
       results: {
@@ -291,12 +287,13 @@ export class LabStore {
           : comparison.winner,
       resultsInvalidated: false,
       comparison,
-      notice: comparisonNotice,
+      comparisonVersion: this.state.comparisonVersion + 1,
+      notice: `Comparison complete. ${comparison.decisionReason}`,
       activity: [
         this.activity(
           actor,
           'compared routing policies',
-          options.detail ?? comparisonDetail,
+          options.detail ?? comparison.decisionReason,
         ),
         ...this.state.activity,
       ].slice(0, 20),
@@ -339,8 +336,8 @@ export class LabStore {
       ...options,
       detail:
         comparison.winner === 'tie'
-          ? `Policies are within 1%; kept ${policy === 'thermalmesh' ? 'ThermalMesh' : 'Round Robin'} active.`
-          : `Applied the lower-scoring ${policy === 'thermalmesh' ? 'ThermalMesh' : 'Round Robin'} policy.`,
+          ? `Policies score less than 1% apart; kept ${policy === 'thermalmesh' ? 'ThermalMesh' : 'Round Robin'} active.`
+          : `Applied the recommended ${policy === 'thermalmesh' ? 'ThermalMesh' : 'Round Robin'} policy.`,
     });
   }
 
@@ -357,12 +354,24 @@ export class LabStore {
     this.emit({ ...this.state, webMcpStatus: status, webMcpError: error });
   }
 
+  setDynamicToolStatus(status: DynamicToolStatus): void {
+    if (this.state.dynamicToolStatus === status) return;
+    this.emit({ ...this.state, dynamicToolStatus: status });
+  }
+
+  setBaseToolsRegistered(registered: boolean): void {
+    if (this.state.baseToolsRegistered === registered) return;
+    this.emit({ ...this.state, baseToolsRegistered: registered });
+  }
+
   getAgentSnapshot(): AgentStateSnapshot {
-    const result = this.state.latestResultPolicy
+    const latestResult = this.state.latestResultPolicy
       ? (this.state.results[this.state.latestResultPolicy] ?? null)
       : null;
+    const workerResult =
+      this.state.results[this.state.activePolicy] ?? latestResult;
     const metricById = new Map(
-      result?.workers.map((worker) => [worker.workerId, worker]) ?? [],
+      workerResult?.workers.map((worker) => [worker.workerId, worker]) ?? [],
     );
     return {
       workers: this.state.workers.map((worker) => {
@@ -377,9 +386,11 @@ export class LabStore {
       }),
       workload: cloneWorkload(this.state.workload),
       activePolicy: this.state.activePolicy,
-      latestBenchmark: result,
+      workerMetricsPolicy: workerResult?.policy ?? null,
+      latestBenchmark: latestResult,
       comparison: this.state.comparison,
       comparisonValid: this.state.comparison !== null,
+      applyWinningToolAvailable: this.state.dynamicToolStatus === 'available',
     };
   }
 }

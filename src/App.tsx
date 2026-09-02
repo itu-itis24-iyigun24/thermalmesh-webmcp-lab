@@ -88,7 +88,7 @@ function Panel({
 function ComparisonPulse({ comparison }: { comparison: ComparisonResult }) {
   const winnerLabel =
     comparison.winner === 'tie'
-      ? 'Policies are within 1%'
+      ? 'Policies score less than 1% apart'
       : `${policyLabel(comparison.winner)} leads this scenario`;
   const tailChange = comparison.improvements.ttftP95Percent;
 
@@ -541,11 +541,15 @@ function Field({
 }
 
 function RoutingControls({ state }: { state: LabState }) {
+  const [runError, setRunError] = useState<string | null>(null);
   const run = (policy: RoutingPolicy) => {
     try {
       labStore.runBenchmark(policy, { actor: 'human' });
-    } catch {
-      // Inputs are already validated; the live-region notice remains unchanged on unexpected failures.
+      setRunError(null);
+    } catch (error) {
+      setRunError(
+        error instanceof Error ? error.message : 'Benchmark failed to run.',
+      );
     }
   };
 
@@ -606,6 +610,11 @@ function RoutingControls({ state }: { state: LabState }) {
       >
         <BarChart3 aria-hidden="true" /> Compare routing policies
       </Button>
+      {runError ? (
+        <p className="mt-3 text-xs leading-5 text-rose-300" role="alert">
+          {runError}
+        </p>
+      ) : null}
       <p className="mt-3 text-xs leading-5 text-muted-foreground">
         Both policies receive the exact same seeded request trace.
       </p>
@@ -649,8 +658,8 @@ function EmptyResults({
 type MetricRow = {
   label: string;
   direction: 'lower' | 'higher';
-  roundRobin: number;
-  thermalmesh: number;
+  roundRobin: number | null;
+  thermalmesh: number | null;
   unit: string;
   percent?: number | null;
 };
@@ -801,7 +810,8 @@ function ComparisonTable({ comparison }: { comparison: ComparisonResult }) {
   );
 }
 
-function formatMetric(value: number, unit: string): string {
+function formatMetric(value: number | null, unit: string): string {
+  if (value === null) return 'Not observed';
   const decimals = unit === 'req/s' ? 2 : value >= 1_000 ? 0 : 1;
   return `${value.toLocaleString(undefined, { maximumFractionDigits: decimals })} ${unit}`;
 }
@@ -829,6 +839,9 @@ function WinnerBanner({ comparison }: { comparison: ComparisonResult }) {
         </div>
         <div>
           <p className="font-medium text-white">{label}</p>
+          <p className="mt-1 text-sm leading-5 text-cyan-50/90">
+            {comparison.decisionReason}
+          </p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             {comparison.scoreSummary}
           </p>
@@ -847,9 +860,9 @@ function WinnerBanner({ comparison }: { comparison: ComparisonResult }) {
 
 function SingleBenchmark({ result }: { result: SimulationResult }) {
   const metrics = [
-    ['TTFT p50', `${result.metrics.ttftP50Ms.toLocaleString()} ms`],
-    ['TTFT p95', `${result.metrics.ttftP95Ms.toLocaleString()} ms`],
-    ['Queue p95', `${result.metrics.queueP95Ms.toLocaleString()} ms`],
+    ['TTFT p50', formatMetric(result.metrics.ttftP50Ms, 'ms')],
+    ['TTFT p95', formatMetric(result.metrics.ttftP95Ms, 'ms')],
+    ['Queue p95', formatMetric(result.metrics.queueP95Ms, 'ms')],
     ['Throughput', `${result.metrics.throughput.toFixed(2)} req/s`],
     ['Completed', result.metrics.completedRequests.toLocaleString()],
     ['Unfinished', result.metrics.unfinishedRequests.toLocaleString()],
@@ -909,8 +922,8 @@ function LatencyBars({ comparison }: { comparison: ComparisonResult }) {
   ] as const;
   const max = Math.max(
     ...groups.flatMap(([, roundRobin, thermalmesh]) => [
-      roundRobin,
-      thermalmesh,
+      roundRobin ?? 0,
+      thermalmesh ?? 0,
     ]),
     1,
   );
@@ -924,13 +937,13 @@ function LatencyBars({ comparison }: { comparison: ComparisonResult }) {
             <ComparisonBar
               label="RR"
               value={roundRobin}
-              width={(roundRobin / max) * 100}
+              width={roundRobin === null ? 0 : (roundRobin / max) * 100}
               tone="muted"
             />
             <ComparisonBar
               label="TM"
               value={thermalmesh}
-              width={(thermalmesh / max) * 100}
+              width={thermalmesh === null ? 0 : (thermalmesh / max) * 100}
               tone="cyan"
             />
           </div>
@@ -955,7 +968,7 @@ function ComparisonBar({
   tone,
 }: {
   label: string;
-  value: number;
+  value: number | null;
   width: number;
   tone: 'muted' | 'cyan';
 }) {
@@ -965,11 +978,13 @@ function ComparisonBar({
       <div className="h-2 overflow-hidden rounded-full bg-white/7">
         <div
           className={`h-full min-w-0.5 rounded-full ${tone === 'cyan' ? 'bg-cyan-300' : 'bg-slate-400/70'}`}
-          style={{ width: `${Math.max(width, 0.75)}%` }}
+          style={{ width: value === null ? '0%' : `${Math.max(width, 0.75)}%` }}
         />
       </div>
       <span className="text-right font-mono text-xs tabular-nums text-muted-foreground">
-        {value.toLocaleString(undefined, { maximumFractionDigits: 0 })} ms
+        {value === null
+          ? 'N/A'
+          : `${value.toLocaleString(undefined, { maximumFractionDigits: 0 })} ms`}
       </span>
     </div>
   );
@@ -1089,13 +1104,22 @@ function ObservationList({ state }: { state: LabState }) {
 
 function ActivityPanel({
   entries,
-  dynamicAvailable,
-  status,
+  dynamicStatus,
+  baseToolsRegistered,
 }: {
   entries: ActivityEntry[];
-  dynamicAvailable: boolean;
-  status: LabState['webMcpStatus'];
+  dynamicStatus: LabState['dynamicToolStatus'];
+  baseToolsRegistered: boolean;
 }) {
+  const dynamicAvailable = dynamicStatus === 'available';
+  const dynamicLabel =
+    dynamicStatus === 'available'
+      ? 'Available'
+      : dynamicStatus === 'registering'
+        ? 'Registering'
+        : dynamicStatus === 'error'
+          ? 'Error'
+          : 'Locked';
   return (
     <Panel className="overflow-hidden xl:sticky xl:top-5">
       <PanelHeading
@@ -1110,7 +1134,7 @@ function ActivityPanel({
             Registered tools
           </span>
           <span className="font-mono text-sm text-white">
-            {status === 'enabled'
+            {baseToolsRegistered
               ? BASE_TOOLS.length + Number(dynamicAvailable)
               : 0}
           </span>
@@ -1121,9 +1145,9 @@ function ActivityPanel({
           </span>
           <Badge
             variant="outline"
-            className={`border-white/9 ${dynamicAvailable ? 'text-emerald-300' : 'text-muted-foreground'}`}
+            className={`border-white/9 ${dynamicStatus === 'available' ? 'text-emerald-300' : dynamicStatus === 'registering' ? 'text-amber-300' : dynamicStatus === 'error' ? 'text-rose-300' : 'text-muted-foreground'}`}
           >
-            {dynamicAvailable ? 'Available' : 'Locked'}
+            {dynamicLabel}
           </Badge>
         </div>
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
@@ -1292,7 +1316,7 @@ export default function App() {
                 <h1 className="text-2xl font-semibold tracking-[-0.04em] text-white sm:text-3xl">
                   ThermalMesh Lab
                 </h1>
-                <span className="hidden text-sm text-muted-foreground sm:inline">
+                <span className="text-xs text-muted-foreground sm:text-sm">
                   Agent-Native AI Infrastructure Playground
                 </span>
               </div>
@@ -1533,10 +1557,8 @@ export default function App() {
           <aside className="min-w-0">
             <ActivityPanel
               entries={state.activity}
-              dynamicAvailable={
-                state.webMcpStatus === 'enabled' && Boolean(state.comparison)
-              }
-              status={state.webMcpStatus}
+              dynamicStatus={state.dynamicToolStatus}
+              baseToolsRegistered={state.baseToolsRegistered}
             />
           </aside>
         </div>

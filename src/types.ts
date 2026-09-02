@@ -39,10 +39,12 @@ export interface WorkerMetrics {
 }
 
 export interface SimulationMetrics {
-  ttftP50Ms: number;
-  ttftP95Ms: number;
+  ttftP50Ms: number | null;
+  ttftP95Ms: number | null;
   throughput: number;
-  queueP95Ms: number;
+  queueP95Ms: number | null;
+  ttftSampleCount: number;
+  queueSampleCount: number;
   completedRequests: number;
   unfinishedRequests: number;
   totalRequests: number;
@@ -73,6 +75,7 @@ export interface ComparisonResult {
   winner: RoutingPolicy | 'tie';
   scores: Record<RoutingPolicy, number>;
   scoreSummary: string;
+  decisionReason: string;
 }
 
 export interface ActivityEntry {
@@ -84,6 +87,11 @@ export interface ActivityEntry {
 }
 
 export type WebMcpStatus = 'checking' | 'enabled' | 'unavailable' | 'error';
+export type DynamicToolStatus =
+  | 'unavailable'
+  | 'registering'
+  | 'available'
+  | 'error';
 
 export interface LabState {
   workers: WorkerConfig[];
@@ -92,8 +100,11 @@ export interface LabState {
   latestResultPolicy: RoutingPolicy | null;
   results: Partial<Record<RoutingPolicy, SimulationResult>>;
   comparison: ComparisonResult | null;
+  comparisonVersion: number;
   activity: ActivityEntry[];
   webMcpStatus: WebMcpStatus;
+  baseToolsRegistered: boolean;
+  dynamicToolStatus: DynamicToolStatus;
   webMcpError: string | null;
   notice: string;
   configVersion: number;

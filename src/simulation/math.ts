@@ -2,10 +2,13 @@ export function percentile(
   values: readonly number[],
   quantile: number,
 ): number {
-  if (values.length === 0) return 0;
   if (!Number.isFinite(quantile) || quantile < 0 || quantile > 1) {
     throw new RangeError('Quantile must be between 0 and 1.');
   }
+  if (values.some((value) => !Number.isFinite(value))) {
+    throw new RangeError('Percentile samples must be finite numbers.');
+  }
+  if (values.length === 0) return 0;
 
   const sorted = [...values].sort((a, b) => a - b);
   const position = (sorted.length - 1) * quantile;
