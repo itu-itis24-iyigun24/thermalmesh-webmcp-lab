@@ -40,7 +40,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { policyLabel } from '@/src/domain/analysis';
 import { LIMITS } from '@/src/domain/validation';
 import { labStore } from '@/src/state/lab-store';
 import { useLabState } from '@/src/state/use-lab-store';
@@ -66,6 +65,16 @@ const BASE_TOOLS = [
   'apply_routing_policy',
 ];
 
+function policyLabel(policy: RoutingPolicy): string {
+  return policy === 'thermalmesh'
+    ? 'Inference-Aware (ThermalMesh)'
+    : 'Round Robin';
+}
+
+function displayPolicyTerms(text: string): string {
+  return text.replaceAll('ThermalMesh', 'Inference-Aware (ThermalMesh)');
+}
+
 function Panel({
   children,
   className = '',
@@ -89,7 +98,9 @@ function ComparisonPulse({ comparison }: { comparison: ComparisonResult }) {
   const winnerLabel =
     comparison.winner === 'tie'
       ? 'Policies score less than 1% apart'
-      : `${policyLabel(comparison.winner)} leads this scenario`;
+      : comparison.winner === 'thermalmesh'
+        ? 'Inference-Aware routing leads this scenario'
+        : 'Round Robin leads this scenario';
   const roundRobinMetrics = comparison.roundRobin.metrics;
   const thermalmeshMetrics = comparison.thermalmesh.metrics;
   const [otherMetrics, winnerMetrics] =
@@ -110,7 +121,7 @@ function ComparisonPulse({ comparison }: { comparison: ComparisonResult }) {
     comparison.winner === 'tie' &&
     roundRobinMetrics.ttftP95Ms !== null &&
     thermalmeshMetrics.ttftP95Ms !== null
-      ? `TTFT p95 RR ${formatMetric(roundRobinMetrics.ttftP95Ms, 'ms')} ↔ TM ${formatMetric(thermalmeshMetrics.ttftP95Ms, 'ms')}`
+      ? `TTFT p95 RR ${formatMetric(roundRobinMetrics.ttftP95Ms, 'ms')} ↔ IA ${formatMetric(thermalmeshMetrics.ttftP95Ms, 'ms')}`
       : tailPercent === null
         ? 'TTFT p95 not observed'
         : tailChanged
@@ -610,8 +621,8 @@ function RoutingControls({ state }: { state: LabState }) {
               <b>{policyLabel(policy)}</b>
               <small>
                 {policy === 'round_robin'
-                  ? 'Sequential assignment'
-                  : 'Predicted completion'}
+                  ? 'Equal · load-blind'
+                  : 'Capacity + load + ETA'}
               </small>
             </span>
             {state.activePolicy === policy ? (
@@ -635,7 +646,7 @@ function RoutingControls({ state }: { state: LabState }) {
           onClick={() => run('thermalmesh')}
           className="h-9 border-white/10 bg-white/[0.025]"
         >
-          <Play aria-hidden="true" /> Run TM
+          <Play aria-hidden="true" /> Run Inference-Aware
         </Button>
       </div>
       <Button
@@ -643,7 +654,7 @@ function RoutingControls({ state }: { state: LabState }) {
         onClick={() => labStore.compare({ actor: 'human' })}
         className="mt-2 h-10 w-full bg-cyan-300 text-slate-950 shadow-[0_0_24px_rgb(34_211_238/12%)] hover:bg-cyan-200"
       >
-        <BarChart3 aria-hidden="true" /> Compare routing policies
+        <BarChart3 aria-hidden="true" /> Compare Round Robin vs Inference-Aware
       </Button>
       {runError ? (
         <p className="mt-3 text-xs leading-5 text-rose-300" role="alert">
@@ -782,7 +793,7 @@ function ComparisonTable({ comparison }: { comparison: ComparisonResult }) {
             scope="col"
             className="h-9 text-right font-mono text-xs uppercase tracking-[0.1em] text-cyan-200/90"
           >
-            ThermalMesh
+            Inference-Aware (ThermalMesh)
           </TableHead>
           <TableHead
             scope="col"
@@ -875,7 +886,7 @@ function WinnerBanner({ comparison }: { comparison: ComparisonResult }) {
         <div>
           <p className="font-medium text-white">{label}</p>
           <p className="mt-1 text-sm leading-5 text-cyan-50/90">
-            {comparison.decisionReason}
+            {displayPolicyTerms(comparison.decisionReason)}
           </p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             {comparison.scoreSummary}
@@ -976,7 +987,7 @@ function LatencyBars({ comparison }: { comparison: ComparisonResult }) {
               tone="muted"
             />
             <ComparisonBar
-              label="TM"
+              label="IA"
               value={thermalmesh}
               width={thermalmesh === null ? 0 : (thermalmesh / max) * 100}
               tone="cyan"
@@ -989,7 +1000,8 @@ function LatencyBars({ comparison }: { comparison: ComparisonResult }) {
           <i className="size-1.5 rounded-full bg-slate-400" /> Round Robin
         </span>
         <span className="flex items-center gap-1.5">
-          <i className="size-1.5 rounded-full bg-cyan-300" /> ThermalMesh
+          <i className="size-1.5 rounded-full bg-cyan-300" /> Inference-Aware
+          (ThermalMesh)
         </span>
       </div>
     </div>
@@ -1059,7 +1071,7 @@ function WorkerLoadChart({
               />
               {other ? (
                 <LoadBar
-                  label="TM"
+                  label="IA"
                   value={other.utilization}
                   maxQueue={other.maxQueueDepth}
                   tone="cyan"
@@ -1129,7 +1141,7 @@ function ObservationList({ state }: { state: LabState }) {
             />
           )}
           <p className="text-xs leading-5 text-muted-foreground">
-            {observation.message}
+            {displayPolicyTerms(observation.message)}
           </p>
         </div>
       ))}
@@ -1263,7 +1275,7 @@ function ActivityItem({
           {entry.action}
         </p>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {entry.detail}
+          {displayPolicyTerms(entry.detail)}
         </p>
       </div>
     </li>
@@ -1275,12 +1287,12 @@ function EducationSection() {
     {
       icon: Network,
       title: 'Why heterogeneity is difficult',
-      text: 'Round Robin treats every worker equally even when their service capacities differ, so slower workers can accumulate queues while faster workers sit underused.',
+      text: 'Round Robin distributes requests without considering worker capacity or load.',
     },
     {
       icon: BrainCircuit,
       title: 'What inference-aware routing does',
-      text: 'This educational strategy compares each worker’s capacity and queued finish time, then chooses the earliest predicted completion for every request.',
+      text: 'Inference-Aware (ThermalMesh) considers capacity, current and predicted load, and estimated completion time.',
     },
     {
       icon: Bot,
@@ -1517,7 +1529,7 @@ export default function App() {
               <PanelHeading
                 index="05"
                 eyebrow="Benchmark results"
-                title="Simulated policy comparison"
+                title="Round Robin vs Inference-Aware Routing"
                 detail="Latency is shown in simulated milliseconds; throughput is completed requests per simulated second."
                 action={
                   state.comparison ? (
@@ -1612,7 +1624,7 @@ export default function App() {
         </footer>
 
         <output className="sr-only" aria-live="polite" aria-atomic="true">
-          {state.notice}
+          {displayPolicyTerms(state.notice)}
         </output>
       </div>
     </main>
