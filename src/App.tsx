@@ -601,7 +601,7 @@ function RoutingControls({ state }: { state: LabState }) {
 
   return (
     <div className="p-4 sm:p-5">
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,10.5rem),1fr))] gap-2">
         {(['round_robin', 'thermalmesh'] as const).map((policy) => (
           <button
             type="button"
@@ -631,7 +631,7 @@ function RoutingControls({ state }: { state: LabState }) {
           </button>
         ))}
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
+      <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,10.5rem),1fr))] gap-2">
         <Button
           type="button"
           variant="outline"
@@ -654,7 +654,7 @@ function RoutingControls({ state }: { state: LabState }) {
         onClick={() => labStore.compare({ actor: 'human' })}
         className="mt-2 h-10 w-full bg-cyan-300 text-slate-950 shadow-[0_0_24px_rgb(34_211_238/12%)] hover:bg-cyan-200"
       >
-        <BarChart3 aria-hidden="true" /> Compare Round Robin vs Inference-Aware
+        <BarChart3 aria-hidden="true" /> Compare routing policies
       </Button>
       {runError ? (
         <p className="mt-3 text-xs leading-5 text-rose-300" role="alert">
