@@ -90,7 +90,36 @@ function ComparisonPulse({ comparison }: { comparison: ComparisonResult }) {
     comparison.winner === 'tie'
       ? 'Policies score less than 1% apart'
       : `${policyLabel(comparison.winner)} leads this scenario`;
-  const tailChange = comparison.improvements.ttftP95Percent;
+  const roundRobinMetrics = comparison.roundRobin.metrics;
+  const thermalmeshMetrics = comparison.thermalmesh.metrics;
+  const [otherMetrics, winnerMetrics] =
+    comparison.winner === 'round_robin'
+      ? [thermalmeshMetrics, roundRobinMetrics]
+      : [roundRobinMetrics, thermalmeshMetrics];
+  const tailPercent =
+    comparison.winner !== 'tie' &&
+    winnerMetrics.ttftP95Ms !== null &&
+    otherMetrics.ttftP95Ms !== null &&
+    otherMetrics.ttftP95Ms > 0
+      ? ((winnerMetrics.ttftP95Ms - otherMetrics.ttftP95Ms) /
+          otherMetrics.ttftP95Ms) *
+        100
+      : null;
+  const tailChanged = tailPercent !== null && Math.abs(tailPercent) >= 0.05;
+  const tailVisual =
+    comparison.winner === 'tie' &&
+    roundRobinMetrics.ttftP95Ms !== null &&
+    thermalmeshMetrics.ttftP95Ms !== null
+      ? `TTFT p95 RR ${formatMetric(roundRobinMetrics.ttftP95Ms, 'ms')} ↔ TM ${formatMetric(thermalmeshMetrics.ttftP95Ms, 'ms')}`
+      : tailPercent === null
+        ? 'TTFT p95 not observed'
+        : tailChanged
+          ? `TTFT p95 ${tailPercent < 0 ? '↓' : '↑'} ${Math.abs(tailPercent).toFixed(1)}%`
+          : 'TTFT p95 unchanged';
+  const completedVisual =
+    comparison.winner === 'tie'
+      ? `Completed ${roundRobinMetrics.completedRequests.toLocaleString()} = ${thermalmeshMetrics.completedRequests.toLocaleString()}`
+      : `Completed ${otherMetrics.completedRequests.toLocaleString()} → ${winnerMetrics.completedRequests.toLocaleString()}`;
 
   return (
     <div className="mb-4 flex flex-col gap-3 rounded-xl border border-cyan-300/18 bg-cyan-300/[0.055] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -100,10 +129,16 @@ function ComparisonPulse({ comparison }: { comparison: ComparisonResult }) {
         </span>
         <div>
           <p className="text-sm font-medium text-white">{winnerLabel}</p>
-          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            {tailChange === null
-              ? 'Tail-latency change is not available for this run.'
-              : `ThermalMesh TTFT p95 is ${Math.abs(tailChange).toFixed(1)}% ${tailChange >= 0 ? 'lower' : 'higher'}; ${comparison.improvements.completedDelta >= 0 ? '+' : ''}${comparison.improvements.completedDelta} completed requests.`}
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 font-mono text-xs leading-5 text-muted-foreground">
+            <span className="font-semibold text-foreground/90">
+              {tailVisual}
+            </span>
+            <span aria-hidden="true" className="text-muted-foreground/55">
+              ·
+            </span>
+            <span className="font-semibold text-foreground/90">
+              {completedVisual}
+            </span>
           </p>
         </div>
       </div>
